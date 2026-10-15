@@ -3,6 +3,7 @@ No CAPTCHA solving, stealth proxying, login automation, or purchase automation.
 """
 from __future__ import annotations
 import csv, html, json, os, re, smtplib
+import requests
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
@@ -17,7 +18,7 @@ HISTORY = Path('data/price_history.csv')
 STATE = Path('data/state.json')
 # These URLs are for the correct event. CrowdVolt, Gametime and Friday's TicketData are excluded.
 SOURCES = {
-    'Vivid Seats': 'https://www.vividseats.com/fisher---dj-tickets-forest-hills-forest-hills-stadium-at-west-side-tennis-club-10-17-2026--concerts-dance-electronica/production/7151448',
+    'Vivid Seats': 'https://www.vividseats.com/fisher-edm-tickets/performer/143604',
     'SeatGeek': 'https://seatgeek.com/fisher-tickets/forest-hills-new-york-forest-hills-stadium-2026-10-17-5-45-pm/concert/18301903',
     'TickPick': 'https://www.tickpick.com/buy-fisher-artist-tickets-forest-hills-stadium-10-17-26-5pm/8045664/',
     'NightOut': 'https://nightout.com/events/v/fisher-dj-forest-hills-stadium-at-west-side-tennis-club-forest-hills-2026-10-17/tickets',
@@ -39,26 +40,11 @@ def extract(site, text):
     text = ' '.join(text.split())
     if not re.search(r'\bfisher\b', text, re.I) or not DATE.search(text) or 'forest hills' not in text.lower():
         return None, 'Event not identifiable in returned page'
-    if site == "Vivid Seats":
-        first_card = page.locator(
-            '[data-testid="listing-group-row-container"]'
-        ).first
-
-        first_card.wait_for(state="visible", timeout=20000)
-
-        price_text = first_card.locator(
-            '[data-testid="listing-price"]'
-        ).inner_text()
-
-        price = float(
-            re.search(r"\$([\d,]+(?:\.\d{2})?)", price_text)
-            .group(1)
-            .replace(",", "")
-        )
-
-        fees_included = first_card.locator(
-            '[data-testid="fees-included-text"]'
-        ).count() > 0
+    if site == 'Vivid Seats':
+        # Multiple dates on one artist page: restrict the search to the Oct 17 tour row.
+        # Split before the next Fri/Sat tour date or the general FAQs/stats.
+        m = re.search(r'(?:Sat\s*)?Oct\s*17\b(?:.{0,450}?)\bFrom\s*'+MONEY, text, re.I)
+        return (dollars(m), 'Oct 17 tour-row from price; checkout not verified') if m else (None, 'Oct 17 tour price not rendered')
     if site == 'SeatGeek':
         # The event page has individual GA listings. Avoid map prices and other
         # dollar amounts by extracting only within a section listing block.
@@ -114,40 +100,60 @@ def check(browser, site, url, now):
         if re.search(r'(verify you are human|access denied|captcha|unusual traffic)', text, re.I):
             record.update(status='Access challenge',detail='Manual check needed')
             return record
-        if site == "Vivid Seats":
-            first_card = page.locator(
-                '[data-testid="listing-group-row-container"]'
-            ).first
-
-            first_card.wait_for(state="visible", timeout=20000)
-
-            price_text = first_card.locator(
-                '[data-testid="listing-price"]'
-            ).inner_text()
-
-            match = re.search(r'\$([\d,]+(?:\.\d{2})?)', price_text)
-
-            if not match:
-                raise ValueError("Vivid Seats listing price missing")
-
-            price = float(match.group(1).replace(",", ""))
-
-            fees_included = first_card.locator(
-                '[data-testid="fees-included-text"]'
-            ).count() > 0
-
-            detail = (
-                "First listing, fees included"
-                if fees_included
-                else "First listing, fees not verified"
-            )
-        else:
-            price, detail = extract(site, text)
+        price, detail = extract(site, text)
         record.update(price=price if price is not None else '', status='Price found' if price is not None else 'No verified extraction', detail=detail)
     except Exception as exc:
         record.update(status='Browser error', detail=f'{type(exc).__name__}: {str(exc)[:130]}')
     finally:
         page.close()
+    return record
+
+def check_ticketmaster(now):
+    """Official Discovery API: event-level price range, not a live resale/cart quote."""
+    site = 'Ticketmaster'
+    base = 'https://app.ticketmaster.com/discovery/v2/events.json'
+    browse_url = 'https://www.ticketmaster.com/fisher-tickets/artist/847492'
+    record = {'time': now, 'site': site, 'price': '', 'status': '',
+              'detail': '', 'url': browse_url}
+    key = os.getenv('TICKETMASTER_API_KEY', '').strip()
+    if not key:
+        record.update(status='API key missing', detail='Set TICKETMASTER_API_KEY as a GitHub Actions secret')
+        return record
+    try:
+        resp = requests.get(base, params={
+            'apikey': key, 'keyword': 'Fisher', 'startDateTime': '2026-10-17T00:00:00Z',
+            'endDateTime': '2026-10-18T04:00:00Z', 'countryCode': 'US',
+            'size': 100,
+        }, timeout=20)
+        if resp.status_code in (401, 403, 429):
+            record.update(status=f'API HTTP {resp.status_code}', detail='Ticketmaster API rejected request or rate-limited')
+            return record
+        resp.raise_for_status()
+        events = resp.json().get('_embedded', {}).get('events', [])
+        matches = []
+        for e in events:
+            name = e.get('name', '')
+            date = e.get('dates', {}).get('start', {}).get('localDate', '')
+            venues = e.get('_embedded', {}).get('venues', [])
+            if not (re.search(r'\bfisher\b', name, re.I) and date == '2026-10-17'
+                    and any('forest hills stadium' in v.get('name', '').lower() for v in venues)):
+                continue
+            matches.append(e)
+        if not matches:
+            record.update(status='Not found in API', detail='No matching Oct 17 Forest Hills Stadium event in Discovery API response')
+            return record
+        event = matches[0]
+        record['url'] = event.get('url') or browse_url
+        ranges = event.get('priceRanges') or []
+        usd = [v for v in ranges if v.get('currency') == 'USD' and isinstance(v.get('min'), (float, int))]
+        if not usd:
+            record.update(status='No API price', detail='Event confirmed in API, but priceRanges.min is unavailable')
+            return record
+        price = min(float(v['min']) for v in usd)
+        record.update(price=round(price, 2), status='API price found',
+                      detail='Ticketmaster published minimum; fees and availability unverified')
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        record.update(status='API error', detail=f'{type(exc).__name__}: {str(exc)[:150]}')
     return record
 
 def get_state():
@@ -215,6 +221,9 @@ def main():
                 results.append(r)
                 print(f"{site}: {r['status']} {r['price']} {r['detail']}")
         finally: browser.close()
+    tm = check_ticketmaster(now)
+    results.append(tm)
+    print(f"Ticketmaster: {tm['status']} {tm['price']} {tm['detail']}")
     for site,url in MANUAL_LINKS.items():
         results.append({'time':now,'site':site,'price':'','status':'Manual check','detail':'Automated access not enabled','url':url})
     add_history(results)
