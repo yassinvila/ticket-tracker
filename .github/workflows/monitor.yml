@@ -22,6 +22,14 @@ jobs:
         run: |
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
+      - name: Run ticket tracker
+        env:
+          TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
+          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+          TRACKER_MODE: ${{ vars.TRACKER_MODE }}
+          PRICE_LIMIT: ${{ vars.PRICE_LIMIT }}
+        run: python tracker.py
       - name: Fetch prices and send report
         env:
           TRACKER_MODE: ${{ vars.TRACKER_MODE || 'test' }}
