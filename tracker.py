@@ -35,12 +35,14 @@ DATE = re.compile(r'(?:Oct(?:ober)?\s*17\b|10/17/2026|2026-10-17)', re.I)
 def dollars(match):
     return round(float(match.group(1).replace(',', '')), 2)
 
-def extract(site, text):
+def extract(site, text, page=None):
     """Return (price, explanation); never use unrelated dollar figures."""
     text = ' '.join(text.split())
     if not re.search(r'\bfisher\b', text, re.I) or not DATE.search(text) or 'forest hills' not in text.lower():
         return None, 'Event not identifiable in returned page'
     if site == "Vivid Seats":
+        if page is None:
+            raise ValueError("Vivid Seats extraction requires a browser page")
         first_card = page.locator(
             '[data-testid="listing-group-row-container"]'
         ).first
@@ -67,8 +69,7 @@ def extract(site, text):
             if fees_included
             else "First listing, fees not verified"
         )
-    else:
-        price, detail = extract(site, text)
+        return price, detail
     if site == 'SeatGeek':
         # The event page has individual GA listings. Avoid map prices and other
         # dollar amounts by extracting only within a section listing block.
@@ -124,7 +125,7 @@ def check(browser, site, url, now):
         if re.search(r'(verify you are human|access denied|captcha|unusual traffic)', text, re.I):
             record.update(status='Access challenge',detail='Manual check needed')
             return record
-        price, detail = extract(site, text)
+        price, detail = extract(site, text, page)
         record.update(price=price if price is not None else '', status='Price found' if price is not None else 'No verified extraction', detail=detail)
     except Exception as exc:
         record.update(status='Browser error', detail=f'{type(exc).__name__}: {str(exc)[:130]}')
