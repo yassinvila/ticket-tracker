@@ -1,0 +1,43 @@
+name: FISHER Price Tracker
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: fisher-monitor
+  cancel-in-progress: false
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Fetch prices and send report
+        env:
+          TRACKER_MODE: ${{ vars.TRACKER_MODE || 'test' }}
+          PRICE_LIMIT: ${{ vars.PRICE_LIMIT || '100' }}
+          MIN_TICKETS: ${{ vars.MIN_TICKETS || '3' }}
+          REPORT_EVERY_RUN: ${{ vars.REPORT_EVERY_RUN || 'true' }}
+          ALERT_TO: yassinvila.info@gmail.com
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ vars.RESEND_FROM }}
+          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+        run: python tracker.py
+      - name: Commit price history and email state
+        if: always()
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/ || true
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update ticket observations'
+            git pull --rebase
+            git push
+          fi
