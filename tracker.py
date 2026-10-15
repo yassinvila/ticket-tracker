@@ -17,7 +17,7 @@ HISTORY = Path('data/price_history.csv')
 STATE = Path('data/state.json')
 # These URLs are for the correct event. CrowdVolt, Gametime and Friday's TicketData are excluded.
 SOURCES = {
-    'Vivid Seats': 'https://www.vividseats.com/fisher-edm-tickets/performer/143604',
+    'Vivid Seats': 'https://www.vividseats.com/fisher---dj-tickets-forest-hills-forest-hills-stadium-at-west-side-tennis-club-10-17-2026--concerts-dance-electronica/production/7151448',
     'SeatGeek': 'https://seatgeek.com/fisher-tickets/forest-hills-new-york-forest-hills-stadium-2026-10-17-5-45-pm/concert/18301903',
     'TickPick': 'https://www.tickpick.com/buy-fisher-artist-tickets-forest-hills-stadium-10-17-26-5pm/8045664/',
     'NightOut': 'https://nightout.com/events/v/fisher-dj-forest-hills-stadium-at-west-side-tennis-club-forest-hills-2026-10-17/tickets',
@@ -39,11 +39,26 @@ def extract(site, text):
     text = ' '.join(text.split())
     if not re.search(r'\bfisher\b', text, re.I) or not DATE.search(text) or 'forest hills' not in text.lower():
         return None, 'Event not identifiable in returned page'
-    if site == 'Vivid Seats':
-        # Multiple dates on one artist page: restrict the search to the Oct 17 tour row.
-        # Split before the next Fri/Sat tour date or the general FAQs/stats.
-        m = re.search(r'(?:Sat\s*)?Oct\s*17\b(?:.{0,450}?)\bFrom\s*'+MONEY, text, re.I)
-        return (dollars(m), 'Oct 17 tour-row from price; checkout not verified') if m else (None, 'Oct 17 tour price not rendered')
+    if site == "Vivid Seats":
+        first_card = page.locator(
+            '[data-testid="listing-group-row-container"]'
+        ).first
+
+        first_card.wait_for(state="visible", timeout=20000)
+
+        price_text = first_card.locator(
+            '[data-testid="listing-price"]'
+        ).inner_text()
+
+        price = float(
+            re.search(r"\$([\d,]+(?:\.\d{2})?)", price_text)
+            .group(1)
+            .replace(",", "")
+        )
+
+        fees_included = first_card.locator(
+            '[data-testid="fees-included-text"]'
+        ).count() > 0
     if site == 'SeatGeek':
         # The event page has individual GA listings. Avoid map prices and other
         # dollar amounts by extracting only within a section listing block.
@@ -99,7 +114,35 @@ def check(browser, site, url, now):
         if re.search(r'(verify you are human|access denied|captcha|unusual traffic)', text, re.I):
             record.update(status='Access challenge',detail='Manual check needed')
             return record
-        price, detail = extract(site, text)
+        if site == "Vivid Seats":
+            first_card = page.locator(
+                '[data-testid="listing-group-row-container"]'
+            ).first
+
+            first_card.wait_for(state="visible", timeout=20000)
+
+            price_text = first_card.locator(
+                '[data-testid="listing-price"]'
+            ).inner_text()
+
+            match = re.search(r'\$([\d,]+(?:\.\d{2})?)', price_text)
+
+            if not match:
+                raise ValueError("Vivid Seats listing price missing")
+
+            price = float(match.group(1).replace(",", ""))
+
+            fees_included = first_card.locator(
+                '[data-testid="fees-included-text"]'
+            ).count() > 0
+
+            detail = (
+                "First listing, fees included"
+                if fees_included
+                else "First listing, fees not verified"
+            )
+        else:
+            price, detail = extract(site, text)
         record.update(price=price if price is not None else '', status='Price found' if price is not None else 'No verified extraction', detail=detail)
     except Exception as exc:
         record.update(status='Browser error', detail=f'{type(exc).__name__}: {str(exc)[:130]}')
