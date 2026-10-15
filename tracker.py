@@ -169,14 +169,34 @@ def check_ticketmaster(now):
             return record
         event = matches[0]
         record['url'] = event.get('url') or browse_url
-        ranges = event.get('priceRanges') or []
-        usd = [v for v in ranges if v.get('currency') == 'USD' and isinstance(v.get('min'), (float, int))]
-        if not usd:
-            record.update(status='No API price', detail='Event confirmed in API, but priceRanges.min is unavailable')
+        inventory_url = 'https://app.ticketmaster.com/inventory-status/v1/availability'
+        inventory = requests.post(inventory_url, params={
+            'events': event['id'],
+            'apikey': key,
+        }, timeout=20)
+        if inventory.status_code in (401, 403, 429):
+            record.update(status=f'Inventory API HTTP {inventory.status_code}',
+                          detail='Ticketmaster Inventory Status API rejected request or rate-limited')
             return record
-        price = min(float(v['min']) for v in usd)
+        inventory.raise_for_status()
+        inventory_records = inventory.json()
+        if not inventory_records:
+            record.update(status='No API price',
+                          detail='Inventory Status API returned no event record')
+            return record
+        ranges = inventory_records[0].get('priceRanges') or []
+        prices = [
+            float(value['minPrice'])
+            for value in ranges
+            if isinstance(value.get('minPrice'), (float, int))
+        ]
+        if not prices:
+            record.update(status='No API price',
+                          detail='Inventory Status API returned no minimum price')
+            return record
+        price = min(prices)
         record.update(price=round(price, 2), status='API price found',
-                      detail='Ticketmaster published minimum; fees and availability unverified')
+                      detail='Ticketmaster Inventory Status minimum; inventory type and checkout fees unverified')
     except (requests.RequestException, ValueError, KeyError) as exc:
         record.update(status='API error', detail=f'{type(exc).__name__}: {str(exc)[:150]}')
     return record
