@@ -1,16 +1,2 @@
-import unittest
-from tracker import parse_html, qualified, make_report
-class TrackerTests(unittest.TestCase):
-    def test_crowdvolt_price_and_quantity(self):
-        o=parse_html('CrowdVolt','https://example.com','<h1>Fisher October 17 2026 Forest Hills</h1><p>General Admission 1-3 Tickets $90 ea</p>','now')
-        self.assertEqual(o.lowest_visible_usd,'90.0')
-        self.assertIn('1-3 Tickets',o.quantity_hint)
-        self.assertFalse(qualified(o))
-        self.assertIn('$90.00',make_report([o]))
-    def test_no_wrong_date_on_artist_page(self):
-        o=parse_html('SeatGeek','u','Fisher Oct 16 Forest Hills From $70','now')
-        self.assertEqual(o.status,'event_unconfirmed')
-    def test_no_unverified_alert(self):
-        o=parse_html('NightOut','u','Fisher Oct 17 Forest Hills from $65 all-in','now')
-        self.assertFalse(qualified(o))
-if __name__=='__main__':unittest.main()
+requests>=2.32,<3
+beautifulsoup4>=4.12,<5
