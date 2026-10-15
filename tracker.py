@@ -1,243 +1,180 @@
-"""FISHER 2026-10-17: observable public prices; never infer checkout prices or inventory."""
+"""FISHER Oct 17 2026 ticket monitor. Browser-rendered public advertised prices.
+No CAPTCHA solving, stealth proxying, login automation, or purchase automation.
+"""
 from __future__ import annotations
-import csv, html, json, os, re, smtplib, sys, time, random
-from dataclasses import dataclass, asdict
+import csv, html, json, os, re, smtplib
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 from zoneinfo import ZoneInfo
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 NY = ZoneInfo('America/New_York')
-END = datetime(2026, 10, 17, 17, 45, tzinfo=NY)
-MODE = os.getenv('TRACKER_MODE', 'test').strip().lower()  # test / threshold
-TARGET = float(os.getenv('PRICE_LIMIT', '100'))
-MIN_TICKETS = int(os.getenv('MIN_TICKETS', '3'))
-REPORT_EVERY_RUN = os.getenv('REPORT_EVERY_RUN', 'true').lower() == 'true'
-# Sites blocking requests are checked again only after a cooldown, not every 5 minutes.
-BLOCK_COOLDOWN_HOURS = int(os.getenv('BLOCK_COOLDOWN_HOURS','12'))
+STOP = datetime(2026, 10, 17, 17, 45, tzinfo=NY)
+MODE = os.getenv('TRACKER_MODE', 'test').lower()
+LIMIT = float(os.getenv('PRICE_LIMIT', '100'))
 HISTORY = Path('data/price_history.csv')
 STATE = Path('data/state.json')
-# Exact event pages preferred; artist-level listings require contextual date checks.
+# These URLs are for the correct event. CrowdVolt, Gametime and Friday's TicketData are excluded.
 SOURCES = {
- 'CrowdVolt': 'https://www.crowdvolt.com/event/fisher-sat-oct-17-forest-hill-new-york',
- 'Vivid Seats': 'https://www.vividseats.com/en/fisher---dj-tickets-forest-hills-forest-hills-stadium-at-west-side-tennis-club-10-17-2026--concerts-dance-electronica/production/7151448',
- 'SeatGeek': 'https://seatgeek.com/fisher-tickets/nyc',
- 'TickPick': 'https://www.tickpick.com/buy-fisher-artist-tickets-forest-hills-stadium-10-17-26-5pm/8045664/',
- 'StubHub': 'https://www.stubhub.com/nz/fisher-flushing-tickets-10-17-2026/event/161348192/',
- 'AXS': 'https://www.axs.com/events/1486750/fisher-tickets',
- 'NightOut': 'https://nightout.com/events/v/fisher-dj-forest-hills-stadium-at-west-side-tennis-club-forest-hills-2026-10-17/tickets',
- 'The King of Tickets': 'https://thekingoftickets.com/performer/fisher-tickets',
- 'TicketData': 'https://www.ticketdata.com/performer/fisher-dj',
- 'Ticketsware': 'https://ticketsware.com/concerts/fisher-artist/forest-hills-stadium-2026-10-17-1745',
+    'Vivid Seats': 'https://www.vividseats.com/fisher-edm-tickets/performer/143604',
+    'SeatGeek': 'https://seatgeek.com/fisher-tickets/forest-hills-new-york-forest-hills-stadium-2026-10-17-5-45-pm/concert/18301903',
+    'TickPick': 'https://www.tickpick.com/buy-fisher-artist-tickets-forest-hills-stadium-10-17-26-5pm/8045664/',
+    'NightOut': 'https://nightout.com/events/v/fisher-dj-forest-hills-stadium-at-west-side-tennis-club-forest-hills-2026-10-17/tickets',
+    'Ticketsware': 'https://ticketsware.com/concerts/fisher-artist/forest-hills-stadium-2026-10-17-1745',
 }
-EVENT_URL = {'CrowdVolt','Vivid Seats','TickPick','StubHub','AXS','NightOut','Ticketsware'}
-HEADERS = {'User-Agent':'Mozilla/5.0 (compatible; PersonalEventPriceMonitor/2.0)', 'Accept-Language':'en-US,en;q=0.9'}
-DOLLAR = re.compile(r'(?<!\w)\$\s*([0-9]{1,4}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)')
-DATE = re.compile(r'(?:Oct(?:ober)?\s*17(?:,?\s*2026)?|10/17/2026|2026-10-17|Sat(?:urday)?\s*,?\s*Oct(?:ober)?\s*17)',re.I)
-
-@dataclass
-class Observation:
- timestamp: str
- site: str
- url: str
- status: str
- prices_usd: str = '[]'             # JSON array of visible monetary mentions, not listings
- lowest_visible_usd: str = ''
- quantity_hint: str = ''
- all_in_verified: bool = False
- quantity_verified: bool = False
- listing_id: str = ''
- note: str = ''
-
-
-# Only explicitly labeled, event-specific advertised prices. Never scan the entire page
-# for dollar signs: historical statistics and other concert listings are not offers.
-PRICE_PATTERNS = {
- 'CrowdVolt': r'Tickets from\s*\$([\d,]+(?:\.\d{1,2})?)',
- 'NightOut': r'general admission starts at\s*\$([\d,]+(?:\.\d{1,2})?)\s+all-in',
- 'Ticketsware': r'from\s*\$([\d,]+(?:\.\d{1,2})?)\s+1 seller',
- 'Vivid Seats': r'tickets start at\s*\$([\d,]+(?:\.\d{1,2})?)',
- 'SeatGeek': r'Oct\s*17.{0,120}?(?:\$|From \$)([\d,]+(?:\.\d{1,2})?)',
+# Other pages are retained as manual links until they have tested parsers.
+MANUAL_LINKS = {
+    'StubHub': 'https://www.stubhub.com/nz/fisher-flushing-tickets-10-17-2026/event/161348192/',
+    'AXS': 'https://www.axs.com/events/1486750/fisher-tickets',
 }
+MONEY = r'\$\s*([\d,]+(?:\.\d{1,2})?)'
+DATE = re.compile(r'(?:Oct(?:ober)?\s*17\b|10/17/2026|2026-10-17)', re.I)
 
-def parse_html(site: str, url: str, source_html: str, timestamp: str) -> Observation:
-    soup=BeautifulSoup(source_html,'html.parser')
-    # Remove scripts and unrelated invisible text; leave a normalized prose snapshot.
-    for el in soup(['script','style','noscript','svg','footer','nav']): el.decompose()
-    text=' '.join(soup.get_text(' ',strip=True).split())
-    if not re.search(r'\bFISHER\b',text,re.I):
-        return Observation(timestamp,site,url,'event_unconfirmed',note='Artist not confirmed in HTML')
-    if site not in EVENT_URL and not DATE.search(text):
-        return Observation(timestamp,site,url,'event_unconfirmed',note='October 17 not present')
-    if site in EVENT_URL and not (DATE.search(text) and 'Forest Hills' in text):
-        return Observation(timestamp,site,url,'event_unconfirmed',note='Exact event not confirmed')
-    pattern=PRICE_PATTERNS.get(site)
-    match=re.search(pattern,text,re.I) if pattern else None
-    if not match:
-        return Observation(timestamp,site,url,'no_price_in_html',note='No reliably labeled event price accessible')
-    price=float(match.group(1).replace(',',''))
-    if not 1<=price<=10000:
-        return Observation(timestamp,site,url,'no_price_in_html',note='Invalid advertised price')
-    qty=''
-    if site=='CrowdVolt':
-        quantities=re.findall(r'General Admission\s+1[-–](\d+)\s+Tickets',text,re.I)
-        if quantities: qty='Advertised ranges up to '+str(max(map(int,quantities)))+'; NOT linked to the floor price'
-    is_all_in=site in ('NightOut','Vivid Seats')
-    freshness=''; stamp=re.search(r'Prices refreshed on\s*([\d-]+\s+[\d:]+\s*UTC)',text,re.I)
-    if stamp: freshness=' Published refresh: '+stamp.group(1)+'.'
-    return Observation(timestamp,site,url,'advertised_from_price',json.dumps([price]),str(price),qty,
-        False,False,'',('Public advertised starting price'+(' (site labels as all-in)' if is_all_in else ' (fees unverified)')+
-        '; quantity 3 together NOT verified.'+freshness))
+def dollars(match):
+    return round(float(match.group(1).replace(',', '')), 2)
 
+def extract(site, text):
+    """Return (price, explanation); never use unrelated dollar figures."""
+    text = ' '.join(text.split())
+    if not re.search(r'\bfisher\b', text, re.I) or not DATE.search(text) or 'forest hills' not in text.lower():
+        return None, 'Event not identifiable in returned page'
+    if site == 'Vivid Seats':
+        # Multiple dates on one artist page: restrict the search to the Oct 17 tour row.
+        # Split before the next Fri/Sat tour date or the general FAQs/stats.
+        m = re.search(r'(?:Sat\s*)?Oct\s*17\b(?:.{0,450}?)\bFrom\s*'+MONEY, text, re.I)
+        return (dollars(m), 'Oct 17 tour-row from price; checkout not verified') if m else (None, 'Oct 17 tour price not rendered')
+    if site == 'SeatGeek':
+        # The event page has individual GA listings. Avoid map prices and other
+        # dollar amounts by extracting only within a section listing block.
+        # Examples: "GA Areas 2 tickets $165 incl. fees" or
+        # "GA Areas 1–6 tickets Amazing $173 incl. fees".
+        prices=[]
+        for section in re.split(r'(?=\b(?:GA Areas|VIP Pit|CLUB \d{3})\b)', text, flags=re.I)[1:]:
+            # Cap the section before a map/next unrelated element.
+            if not re.match(r'GA Areas\b', section, re.I):
+                continue
+            match=re.search(r'\$\s*([\d,]+(?:\.\d{1,2})?)\s*(?:incl\.?\s*fees|including fees)', section[:240], re.I)
+            if match:
+                prices.append(dollars(match))
+        if prices:
+            return min(prices), 'Cheapest visible GA listing, labeled fees included; checkout not verified'
+        return None, 'GA listing prices not available in rendered page'
+    if site == 'TickPick':
+        patterns = [r'Prices for Fisher.{0,320}?start at\s*'+MONEY,
+                    r'General Admission.{0,140}?'+MONEY+r'\s*(?:ea|each)']
+        for pattern in patterns:
+            m = re.search(pattern, text, re.I)
+            if m: return dollars(m), 'Event-specific advertised/listed price; checkout not verified'
+        return None, 'Price not found in rendered page'
+    if site == 'NightOut':
+        for pat in [r'General Admission starts at\s*'+MONEY,
+                    r'Cheapest seats right now.{0,100}?'+MONEY+r'\s*all-in',
+                    r'Tickets from\s*'+MONEY+r'\s*all-in']:
+            m = re.search(pat, text, re.I)
+            if m: return dollars(m), 'Advertised all-in starting price; checkout not verified'
+        return None, 'No labeled current price (historical values ignored)'
+    if site == 'Ticketsware':
+        m = re.search(r'(?:tickets\s*)?from\s*'+MONEY+r'\s*(?:1\s*seller|seller)', text, re.I)
+        return (dollars(m), 'Event advertised floor; other-event prices ignored') if m else (None, 'Labeled event floor missing')
+    return None, 'No supported event-specific parser'
 
-def fetch(site: str,url: str,timestamp: str, session=None) -> Observation:
+def check(browser, site, url, now):
+    record = {'time':now, 'site':site, 'price':'', 'status':'', 'detail':'', 'url':url}
+    page = browser.new_page()
     try:
-        r=(session or requests).get(url,headers=HEADERS,timeout=17)
-        r.raise_for_status()
-        return parse_html(site,url,r.text,timestamp)
-    except requests.HTTPError as e:
-        code = e.response.status_code if e.response is not None else 0
-        if code in (403,429):
-            return Observation(timestamp,site,url,'blocked' if code==403 else 'rate_limited',note=f'HTTP {code}; site refused automated access')
-        return Observation(timestamp,site,url,'http_error',note=f'HTTP {code}')
-    except requests.RequestException as e:
-        return Observation(timestamp,site,url,'request_failed',note=type(e).__name__)
+        response = page.goto(url, wait_until='domcontentloaded', timeout=25000)
+        status = response.status if response else None
+        if status in (403, 429):
+            record.update(status=f'HTTP {status}', detail='Access restricted; no retry/bypass attempted')
+            return record
+        if status and status >= 400:
+            record.update(status=f'HTTP {status}', detail='Website returned an error')
+            return record
+        # Wait briefly for client-rendered text, without clicking or handling access controls.
+        try: page.locator('body').wait_for(state='visible', timeout=7000)
+        except PlaywrightTimeout: pass
+        page.wait_for_timeout(1700)
+        text = page.locator('body').inner_text(timeout=10000)
+        if re.search(r'(verify you are human|access denied|captcha|unusual traffic)', text, re.I):
+            record.update(status='Access challenge',detail='Manual check needed')
+            return record
+        price, detail = extract(site, text)
+        record.update(price=price if price is not None else '', status='Price found' if price is not None else 'No verified extraction', detail=detail)
+    except Exception as exc:
+        record.update(status='Browser error', detail=f'{type(exc).__name__}: {str(exc)[:130]}')
+    finally:
+        page.close()
+    return record
 
-
-def qualified(o: Observation) -> bool:
-    # Only usable once a future connector actually verifies the individual offer.
-    if not(o.all_in_verified and o.quantity_verified and o.listing_id):return False
-    try: return float(o.lowest_visible_usd) < TARGET
-    except ValueError:return False
-
-
-def load_state():
-    try:return json.loads(STATE.read_text(encoding='utf-8'))
-    except (FileNotFoundError,json.JSONDecodeError):return {'last_digest':'','sent_listings':{}}
-
+def get_state():
+    try: return json.loads(STATE.read_text(encoding='utf-8'))
+    except (OSError, ValueError): return {}
 
 def save_state(state):
     STATE.parent.mkdir(parents=True,exist_ok=True)
-    STATE.write_text(json.dumps(state,indent=2)+'\n',encoding='utf-8')
+    STATE.write_text(json.dumps(state,indent=2),encoding='utf-8')
 
-
-def append_history(items):
+def add_history(records):
     HISTORY.parent.mkdir(parents=True,exist_ok=True)
-    new=not HISTORY.exists()
+    fresh = not HISTORY.exists()
     with HISTORY.open('a',newline='',encoding='utf-8') as f:
-        w=csv.DictWriter(f,fieldnames=list(Observation.__dataclass_fields__))
-        if new:w.writeheader()
-        for item in items:w.writerow(asdict(item))
+        writer=csv.DictWriter(f,fieldnames=['time','site','price','status','detail','url'])
+        if fresh: writer.writeheader()
+        writer.writerows(records)
 
-
-def brief_status(o):
-    if o.status=='advertised_from_price':
-        label='From $'+format(float(o.lowest_visible_usd),',.2f')
-        if o.site in ('NightOut','Vivid Seats'):label+=' (published all-in)'
-        return label+' [3 together unverified]'
-    if o.status=='visible_prices_unverified':
-        try:
-            nums=sorted(set(float(n) for n in json.loads(o.prices_usd)))
-        except (ValueError,TypeError): nums=[]
-        # Don't confuse arbitrary dollar amounts with tickets or call the minimum a ticket price.
-        return 'Visible $: '+(', '.join(f'${n:,.2f}' for n in nums[:5]) +
-                            (f' (+{len(nums)-5} more)' if len(nums)>5 else '') if nums else 'none')+' [unverified]'
-    return {'blocked':'Blocked (403)','rate_limited':'Rate-limited (429)',
-            'cooldown':'Skipped (temporary cooldown)','event_unconfirmed':'Event unconfirmed',
-            'no_price_in_html':'No reliable event price','request_failed':'Connection failed',
-            'http_error':'HTTP error'}.get(o.status,o.status)
-
-
-def make_report(items):
-    stamp=items[0].timestamp if items else 'n/a'
-    lines=[f'FISHER · Oct 17 | {stamp}', 'TEST — event-specific advertised FROM prices; 3 tickets together NOT verified.',
-           'Source | Results | URL']
-    for o in items:
-        lines.append(f'{o.site} | {brief_status(o)} | {o.url}')
-    return '\n'.join(lines)+'\n'
-
-
-def make_html_report(items):
-    stamp=html.escape(items[0].timestamp if items else 'n/a')
+def report(records):
     rows=[]
-    for o in items:
-        status=html.escape(brief_status(o))
-        site=html.escape(o.site)
-        url=html.escape(o.url, quote=True)
-        rows.append(f'<tr><td style="padding:7px;border-bottom:1px solid #ddd"><a href="{url}">{site}</a></td>'
-                    f'<td style="padding:7px;border-bottom:1px solid #ddd">{status}</td></tr>')
-    return (f'<html><body style="font:14px Arial,sans-serif;max-width:680px">'
-            f'<h3>FISHER · Oct 17 · Forest Hills</h3>'
-            f'<p>Checked {stamp}<br><b>TEST MODE:</b> advertised event FROM prices only; 3 together unverified.</p>'
-            f'<table style="border-collapse:collapse;width:100%"><tr><th align="left">Website</th>'
-            f'<th align="left">Visible amounts / status</th></tr>{"".join(rows)}</table></body></html>')
+    for r in records:
+        value = f"${float(r['price']):,.2f}" if r['price'] != '' else r['status']
+        rows.append(f'<tr><td style="padding:7px;border-bottom:1px solid #ddd"><a href="{html.escape(r["url"],quote=True)}">{html.escape(r["site"])}</a></td><td style="padding:7px;border-bottom:1px solid #ddd">{html.escape(value)}</td></tr>')
+    table=''.join(rows)
+    return f'<html><body style="font:14px Arial"><b>FISHER — Sat Oct 17</b><p>Test: advertised single-ticket prices; checkout not confirmed.</p><table><tr><th>Site</th><th>Price/status</th></tr>{table}</table></body></html>'
 
-
-def send_email(subject,body,html_body=None):
-    recipient=os.getenv('ALERT_TO','yassinvila.info@gmail.com')
-    # Free Gmail SMTP (app password, NOT account password), or Resend API if verified domain configured.
-    resend_key=os.getenv('RESEND_API_KEY','')
-    if resend_key:
-        sender=os.getenv('RESEND_FROM','')
-        if not sender:raise RuntimeError('RESEND_FROM required for Resend; verified sender/domain may be required')
-        res=requests.post('https://api.resend.com/emails',headers={'Authorization':'Bearer '+resend_key,'Content-Type':'application/json'},json={'from':sender,'to':[recipient],'subject':subject,'text':body,**({'html':html_body} if html_body else {})},timeout=20)
-        res.raise_for_status()
-        return
+def send_email(subject, text, html_body):
     sender=os.getenv('SMTP_EMAIL','')
     password=os.getenv('SMTP_APP_PASSWORD','')
-    if not sender or not password:raise RuntimeError('Configure RESEND_API_KEY+RESEND_FROM or SMTP_EMAIL+SMTP_APP_PASSWORD. Nothing was sent.')
-    msg=EmailMessage();msg['From']=sender;msg['To']=recipient;msg['Subject']=subject;msg.set_content(body)
-    if html_body:msg.add_alternative(html_body,subtype='html')
+    if not (sender and password):
+        raise RuntimeError('Set SMTP_EMAIL and SMTP_APP_PASSWORD in GitHub Actions secrets')
+    recipient=os.getenv('ALERT_TO','yassinvila.info@gmail.com')
+    mail=EmailMessage()
+    mail['From']=sender; mail['To']=recipient; mail['Subject']=subject
+    mail.set_content(text); mail.add_alternative(html_body,subtype='html')
     with smtplib.SMTP_SSL('smtp.gmail.com',465,timeout=20) as server:
-        server.login(sender,password.replace(' ',''));server.send_message(msg)
+        server.login(sender,password.replace(' ','')); server.send_message(mail)
 
-
-def dispatch(items,state):
+def dispatch(records):
+    state=get_state()
+    if MODE not in ('test','threshold'): raise ValueError('TRACKER_MODE must be test or threshold')
     if MODE=='test':
-        report=make_report(items)
-        # Keep one digest per execution, not one mail per site. Enabled by default for testing.
-        if REPORT_EVERY_RUN or state.get('last_digest')!=report:
-            send_email('[TEST] FISHER Oct 17 — price snapshot',report,make_html_report(items))
-            state['last_digest']=report
-            save_state(state)
-            return 'test report emailed'
-        return 'same report skipped'
-    if MODE!='threshold':raise ValueError('TRACKER_MODE must be test or threshold')
-    sent=state.setdefault('sent_listings',{})
+        send_email('[TEST] FISHER Oct 17 — prices', '\n'.join(f"{r['site']}: {r['price'] or r['status']}" for r in records), report(records))
+        return 'Test digest sent'
+    old=state.setdefault('best_alerted',{})
     count=0
-    for o in items:
-        if not qualified(o):continue
-        key=o.site+':'+o.listing_id
-        price=float(o.lowest_visible_usd)
-        if key in sent and price>=float(sent[key]):continue
-        send_email(f'FISHER: {o.site} ${price:.2f} per ticket',
-                   f'{MIN_TICKETS}+ together and fee-inclusive confirmed.\nListing: {o.url}\nSeen: {o.timestamp}')
-        sent[key]=price;save_state(state);count+=1
-    return f'{count} qualifying alerts sent (unverified prices never alert)'
-
+    for r in records:
+        if r['price']=='': continue
+        p=float(r['price'])
+        if p>=LIMIT or (r['site'] in old and p>=float(old[r['site']])): continue
+        send_email(f'FISHER: {r["site"]} from ${p:.2f}', f'Advertised one-ticket floor: ${p:.2f}. Checkout unverified.\n{r["url"]}', report([r]))
+        old[r['site']]=p; save_state(state); count+=1
+    return f'{count} alerts sent'
 
 def main():
-    if datetime.now(NY)>=END:
-        print('Event started; stopping.');return
-    stamp=datetime.now(NY).isoformat(timespec='seconds')
-    state=load_state()
-    blocked=state.setdefault('blocked_until',{})
-    items=[]
-    for site,url in SOURCES.items():
-        if time.time() < float(blocked.get(site,0)):
-            o=Observation(stamp,site,url,'cooldown',note='Previous HTTP 403/429; retry after cooldown')
-        else:
-            # Small polite spacing reduces bursts; not an anti-bot bypass.
-            if items: time.sleep(random.uniform(1.5,3.5))
-            o=fetch(site,url,stamp)
-            if o.status in ('blocked','rate_limited'):
-                blocked[site]=time.time()+BLOCK_COOLDOWN_HOURS*3600
-        items.append(o)
-    save_state(state)
-    append_history(items)
-    for item in items:print(f'{item.site}: {item.status} | {item.lowest_visible_usd or "N/A"}')
-    print(dispatch(items,state))
+    if datetime.now(NY)>=STOP:
+        print('Event start passed; stopped.');return
+    now=datetime.now(NY).isoformat(timespec='seconds')
+    results=[]
+    with sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=os.getenv('HEADED','0')!='1')
+        try:
+            for site,url in SOURCES.items():
+                r=check(browser,site,url,now)
+                results.append(r)
+                print(f"{site}: {r['status']} {r['price']} {r['detail']}")
+        finally: browser.close()
+    for site,url in MANUAL_LINKS.items():
+        results.append({'time':now,'site':site,'price':'','status':'Manual check','detail':'Automated access not enabled','url':url})
+    add_history(results)
+    print(dispatch(results))
 
 if __name__=='__main__':main()
