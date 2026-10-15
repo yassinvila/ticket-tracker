@@ -180,7 +180,7 @@ def report(records):
     table=''.join(rows)
     return f'<html><body style="font:14px Arial"><b>FISHER — Sat Oct 17</b><p>Test: advertised single-ticket prices; checkout not confirmed.</p><table><tr><th>Site</th><th>Price/status</th></tr>{table}</table></body></html>'
 
-def send_email(subject, text, html_body):
+def send_email(subject, text, html_body):ti
     sender=os.getenv('SMTP_EMAIL','')
     password=os.getenv('SMTP_APP_PASSWORD','')
     if not (sender and password):
