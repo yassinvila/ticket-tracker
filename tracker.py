@@ -175,8 +175,13 @@ def check_ticketmaster(now):
             'apikey': key,
         }, timeout=20)
         if inventory.status_code in (401, 403, 429):
+            detail = (
+                'Ticketmaster Inventory Status access is not authorized for this API key'
+                if inventory.status_code in (401, 403)
+                else 'Ticketmaster Inventory Status API rate-limited the request'
+            )
             record.update(status=f'Inventory API HTTP {inventory.status_code}',
-                          detail='Ticketmaster Inventory Status API rejected request or rate-limited')
+                          detail=detail)
             return record
         inventory.raise_for_status()
         inventory_records = inventory.json()
