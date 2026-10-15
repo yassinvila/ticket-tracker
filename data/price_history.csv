@@ -49,3 +49,13 @@ timestamp,site,url,status,prices_usd,lowest_visible_usd,quantity_hint,all_in_ver
 2026-10-15T16:34:22-04:00,The King of Tickets,https://thekingoftickets.com/performer/fisher-tickets,cooldown,[],,,False,False,,Previous HTTP 403/429; retry after cooldown
 2026-10-15T16:34:22-04:00,TicketData,https://www.ticketdata.com/performer/fisher-dj,cooldown,[],,,False,False,,Previous HTTP 403/429; retry after cooldown
 2026-10-15T16:34:22-04:00,Ticketsware,https://ticketsware.com/concerts/fisher-artist/forest-hills-stadium-2026-10-17-1745,advertised_from_price,[235.75],235.75,,False,False,,Public advertised starting price (fees unverified); quantity 3 together NOT verified.
+2026-10-15T16:35:51-04:00,CrowdVolt,https://www.crowdvolt.com/event/fisher-sat-oct-17-forest-hill-new-york,no_price_in_html,[],,,False,False,,No reliably labeled event price accessible
+2026-10-15T16:35:51-04:00,Vivid Seats,https://www.vividseats.com/en/fisher---dj-tickets-forest-hills-forest-hills-stadium-at-west-side-tennis-club-10-17-2026--concerts-dance-electronica/production/7151448,event_unconfirmed,[],,,False,False,,Artist not confirmed in HTML
+2026-10-15T16:35:51-04:00,SeatGeek,https://seatgeek.com/fisher-tickets/nyc,blocked,[],,,False,False,,HTTP 403; site refused automated access
+2026-10-15T16:35:51-04:00,TickPick,https://www.tickpick.com/buy-fisher-artist-tickets-forest-hills-stadium-10-17-26-5pm/8045664/,blocked,[],,,False,False,,HTTP 403; site refused automated access
+2026-10-15T16:35:51-04:00,StubHub,https://www.stubhub.com/nz/fisher-flushing-tickets-10-17-2026/event/161348192/,blocked,[],,,False,False,,HTTP 403; site refused automated access
+2026-10-15T16:35:51-04:00,AXS,https://www.axs.com/events/1486750/fisher-tickets,blocked,[],,,False,False,,HTTP 403; site refused automated access
+2026-10-15T16:35:51-04:00,NightOut,https://nightout.com/events/v/fisher-dj-forest-hills-stadium-at-west-side-tennis-club-forest-hills-2026-10-17/tickets,no_price_in_html,[],,,False,False,,No reliably labeled event price accessible
+2026-10-15T16:35:51-04:00,The King of Tickets,https://thekingoftickets.com/performer/fisher-tickets,rate_limited,[],,,False,False,,HTTP 429; site refused automated access
+2026-10-15T16:35:51-04:00,TicketData,https://www.ticketdata.com/performer/fisher-dj,blocked,[],,,False,False,,HTTP 403; site refused automated access
+2026-10-15T16:35:51-04:00,Ticketsware,https://ticketsware.com/concerts/fisher-artist/forest-hills-stadium-2026-10-17-1745,advertised_from_price,[235.75],235.75,,False,False,,Public advertised starting price (fees unverified); quantity 3 together NOT verified.
