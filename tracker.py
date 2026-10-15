@@ -182,6 +182,12 @@ def dispatch(items,state):
         sent[key]=price;save_state(state);count+=1
     return f'{count} qualifying alerts sent (unverified prices never alert)'
 
+def load_state():
+    try:
+        with open("data/state.json", "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 def main():
     if datetime.now(NY)>=END:
