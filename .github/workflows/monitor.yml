@@ -29,19 +29,11 @@ jobs:
           SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
           TRACKER_MODE: ${{ vars.TRACKER_MODE }}
           PRICE_LIMIT: ${{ vars.PRICE_LIMIT }}
-        run: python tracker.py
-      - name: Fetch prices and send report
-        env:
-          TRACKER_MODE: ${{ vars.TRACKER_MODE || 'test' }}
-          PRICE_LIMIT: ${{ vars.PRICE_LIMIT || '100' }}
           MIN_TICKETS: ${{ vars.MIN_TICKETS || '3' }}
           REPORT_EVERY_RUN: ${{ vars.REPORT_EVERY_RUN || 'true' }}
           ALERT_TO: yassinvila.info@gmail.com
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           RESEND_FROM: ${{ vars.RESEND_FROM }}
-          TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
-          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
-          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
         run: python tracker.py
       - name: Commit price history and email state
         if: always()
