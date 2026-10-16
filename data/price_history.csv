@@ -834,3 +834,11 @@ Call log:
 2026-10-16T18:30:45-04:00,Ticketmaster,,Inventory API HTTP 401,Ticketmaster Inventory Status access is not authorized for this API key,https://www.ticketmaster.com/event/Z7r9jZ1A7Pp4a
 2026-10-16T18:30:45-04:00,StubHub,,Manual check,Automated access not enabled,https://www.stubhub.com/nz/fisher-flushing-tickets-10-17-2026/event/161348192/
 2026-10-16T18:30:45-04:00,AXS,,Manual check,Automated access not enabled,https://www.axs.com/events/1486750/fisher-tickets
+2026-10-16T18:45:41-04:00,Vivid Seats,,No verified extraction,Event not identifiable in returned page,https://www.vividseats.com/fisher---dj-tickets-forest-hills-forest-hills-stadium-at-west-side-tennis-club-10-17-2026--concerts-dance-electronica/production/7151448
+2026-10-16T18:45:41-04:00,SeatGeek,,HTTP 403,Access restricted; no retry/bypass attempted,https://seatgeek.com/fisher-tickets/forest-hills-new-york-forest-hills-stadium-2026-10-17-5-45-pm/concert/18301903
+2026-10-16T18:45:41-04:00,TickPick,,HTTP 403,Access restricted; no retry/bypass attempted,https://www.tickpick.com/buy-fisher-artist-tickets-forest-hills-stadium-10-17-26-5pm/8045664/
+2026-10-16T18:45:41-04:00,NightOut,158.75,Price found,Advertised all-in starting price; checkout not verified,https://nightout.com/events/v/fisher-dj-forest-hills-stadium-at-west-side-tennis-club-forest-hills-2026-10-17/tickets
+2026-10-16T18:45:41-04:00,Ticketsware,159.85,Price found,Event advertised floor; other-event prices ignored,https://ticketsware.com/concerts/fisher-artist/forest-hills-stadium-2026-10-17-1745
+2026-10-16T18:45:41-04:00,Ticketmaster,,Inventory API HTTP 401,Ticketmaster Inventory Status access is not authorized for this API key,https://www.ticketmaster.com/event/Z7r9jZ1A7Pp4a
+2026-10-16T18:45:41-04:00,StubHub,,Manual check,Automated access not enabled,https://www.stubhub.com/nz/fisher-flushing-tickets-10-17-2026/event/161348192/
+2026-10-16T18:45:41-04:00,AXS,,Manual check,Automated access not enabled,https://www.axs.com/events/1486750/fisher-tickets
